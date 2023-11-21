@@ -8,4 +8,4 @@ Private Skip-gram with Adversarial Training
 - networkx 1.11
 
 ## Test run
-
+-run AdvSGM.py in embedding
