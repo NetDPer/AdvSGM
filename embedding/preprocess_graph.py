@@ -186,13 +186,31 @@ def graph_to_subgraph_set(graph):
 
     return ui_uj_label_dict
 
+def generate_random_batch_with_poisson_subsampling(values, L):
+    N = len(values)  # Total number of elements
+    sampling_prob = L / N  # Calculate the sampling probability
+
+    # Generate Poisson-distributed samples for subsampling
+    poisson_samples = np.random.poisson(sampling_prob, N)
+
+    # Create the random batch Lt with Poisson subsampling
+    Lt_indices = [i for i in range(N) if poisson_samples[i] == 1][:L]
+
+    # Return the randomly sampled batch Lt
+    return [values[i] for i in Lt_indices]
+
 def batchSample_from_subgra_set(subgra_set, batch_size):
     ui_uj_label_dict = subgra_set
     # take all keys in dict to form a list
     ui_uj_label_dict.keys()
     # print(ui_uj_label_dict.keys())
     # randomly select n keys
-    sampled_keys = random.sample(ui_uj_label_dict.keys(), batch_size)
+
+    # random sampling
+    # sampled_keys = random.sample(ui_uj_label_dict.keys(), batch_size)
+
+    # Poisson sampling
+    sampled_keys = generate_random_batch_with_poisson_subsampling(list(ui_uj_label_dict.keys()), batch_size)
 
     u_i = []
     u_j = []
