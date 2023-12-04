@@ -35,7 +35,7 @@ parser.add_argument('--gen_sigma', default=2)
 parser.add_argument('--delta', default=10**(-5))
 parser.add_argument('--dis_sens', default=1, help='sensitivity for discriminator')
 parser.add_argument('--epsilon', default=1)
-parser.add_argument('--s', default=6, help='normalization weight parameter')
+parser.add_argument('--clip', default=1)
 
 args = parser.parse_args()
 
@@ -61,7 +61,7 @@ class discriminator:
                                              initializer=tf.random_uniform_initializer(minval=-1., maxval=1.))
             self.u_i_embedding = tf.matmul(tf.one_hot(self.u_i, depth=args.num_of_nodes), self.embedding)
 
-            self.embedding = self.embedding / [tf.norm(self.embedding) * args.s]
+            self.embedding = self.embedding / tf.norm(self.embedding)
 
             if args.proximity == 'first-order':
                 self.u_j_embedding = tf.matmul(tf.one_hot(self.u_j, depth=args.num_of_nodes), self.embedding)
@@ -70,7 +70,7 @@ class discriminator:
                                                          initializer=tf.random_uniform_initializer(minval=-1., maxval=1.))
                 self.u_j_embedding = tf.matmul(tf.one_hot(self.u_j, depth=args.num_of_nodes), self.context_embedding)
 
-                self.context_embedding = self.context_embedding / [tf.norm(self.context_embedding) * args.s]
+                self.context_embedding = self.context_embedding / tf.norm(self.context_embedding)
 
             self.inner_product = tf.reduce_sum(self.u_i_embedding * self.u_j_embedding, axis=1)
 
@@ -99,9 +99,31 @@ class discriminator:
             self.adv_loss = self.weight_i * tf.log(1 - sigmoid_i) \
                             + self.weight_j * tf.log(1 - sigmoid_j)
 
-            self.loss = tf.reduce_mean(self.sgm_loss + self.adv_loss)
-            self.optimizer = tf.train.AdamOptimizer(learning_rate=args.lr_dis)
-            self.train_op = self.optimizer.minimize(self.loss)
+            self.mean_sgm_loss = tf.reduce_mean(self.sgm_loss)
+            self.mean_adv_loss = tf.reduce_mean(self.adv_loss)
+            self.sgm_optimizer = tf.train.AdamOptimizer(learning_rate=args.lr_dis)
+            self.adv_optimizer = tf.train.AdamOptimizer(learning_rate=args.lr_dis)
+
+            self.var_list = [v for v in tf.trainable_variables() if 'forward_pass' in v.name]
+            self.grads_vars_of_sgm = self.sgm_optimizer.compute_gradients(self.mean_sgm_loss, self.var_list)
+            self.grads_vars_of_adv = self.adv_optimizer.compute_gradients(self.mean_adv_loss, self.var_list)
+
+            for i, (g, v) in enumerate(self.grads_vars_of_sgm):  # for each pair
+                if g is not None and v is not None:
+                    if "target_emb" in v.name:
+                        self.grads_vars_of_sgm[i] = (tf.clip_by_norm(g, args.clip), v)
+                    if "context_emb" in v.name:
+                        self.grads_vars_of_sgm[i] = (tf.clip_by_norm(g, args.clip), v)
+
+            for i, (g, v) in enumerate(self.grads_vars_of_adv):  # for each pair
+                if g is not None and v is not None:
+                    if "target_emb" in v.name:
+                        self.grads_vars_of_adv[i] = (tf.clip_by_norm(g, args.clip), v)
+                    if "context_emb" in v.name:
+                        self.grads_vars_of_adv[i] = (tf.clip_by_norm(g, args.clip), v)
+
+            self.train_op_sgm = self.sgm_optimizer.apply_gradients(self.grads_vars_of_sgm)
+            self.train_op_adv = self.adv_optimizer.apply_gradients(self.grads_vars_of_adv)
 
 class generator:
     def __init__(self, args):
@@ -136,15 +158,15 @@ class generator:
 
         test_1 = self.noise_embedding * self.gen_w_1 + self.gen_B_1
 
-        # self.fake_embedding_1 = tf.nn.leaky_relu(test_1)
+        self.fake_embedding_1 = tf.nn.leaky_relu(test_1)
 
-        self.fake_embedding_1 = tf.nn.sigmoid(test_1)
+        # self.fake_embedding_1 = tf.nn.sigmoid(test_1)
 
         test_2 = self.noise_embedding * self.gen_w_2 + self.gen_B_2
 
-        # self.fake_embedding_2 = tf.nn.leaky_relu(test_2)
+        self.fake_embedding_2 = tf.nn.leaky_relu(test_2)
 
-        self.fake_embedding_2 = tf.nn.sigmoid(test_2)
+        # self.fake_embedding_2 = tf.nn.sigmoid(test_2)
 
         self.gen_term_1 = self.fake_embedding_1 * self.pos_node_i_embedding \
                           + self.pos_node_i_embedding * self.noise_embedding
@@ -273,6 +295,7 @@ def expclip(x, a=None, b=None):
     clipping exp function to limit Sigmoid.
     Exponential soft clipping, with parameterized corner sharpness.
     '''
+
     # default scaling constants to match tanh corner shape
     _c_tanh = 2 / (np.e * np.e + 1)  # == 1 - np.tanh(1) ~= 0.24
     _c_softclip = np.log(2) / _c_tanh
@@ -340,7 +363,10 @@ class trainModel:
                                      self.model.fake_u_j_embedding: fake_u_j_embedding,
                                      self.model.Gaussian_noise_i: Gaussian_noise_i,
                                      self.model.Gaussian_noise_j: Gaussian_noise_j}
-                        _, loss = sess.run([self.model.train_op, self.model.loss], feed_dict=feed_dict)
+
+                        _, loss_sgm = sess.run([self.model.train_op_sgm, self.model.mean_sgm_loss], feed_dict=feed_dict)
+                        _, loss_adv = sess.run([self.model.train_op_adv, self.model.mean_adv_loss], feed_dict=feed_dict)
+                        loss = loss_sgm + loss_adv
 
                         # --------- RDP mechanism -------------
                         sampling_prob = args.d_batch_size / args.num_of_edges
@@ -477,23 +503,13 @@ def loadGraphFromEdgeListTxt(file_name, directed=True):
 
 if __name__ == '__main__':
     test_task = 'lp'
-    set_algo_name = 'AdvSGM_Vary_epsilon'
+    set_algo_name = 'AdvSGM'
 
-    args.s = args.K + 1
-    args.dis_sens = (args.K + 1) / args.s
-    '''
-    'lp_PPI', n_epoch = 5
-    'lp_wiki', n_epoch = 5
-    'lp_BlogCatalog', n_epoch = 5
-    'lp_facebook', n_epoch = 5
-    'lp_arxiv' 15
-    'lp_epinions' 25
-    '''
     if test_task == 'lp':
-        set_dataset_names = ['lp_PPI']
+        set_dataset_names = ['lp_BlogCatalog']
         set_split_name = 'train0.9_test0.1'
 
-        epsilon_values = [1]
+        epsilon_values = [2]
         for set_dataset_name in set_dataset_names:
             if set_dataset_name == 'lp_arxiv':
                 args.n_epoch = 15
@@ -509,13 +525,12 @@ if __name__ == '__main__':
                 # set_C = 'C' + str(args.clip_value)
                 set_b = 'b' + str(args.upper_bound)
                 set_K = 'K' + str(args.K)
-                set_s = 's' + str(args.s)
                 # ------------------------------------------------------
                 oriGraph_filename = '../data/' + set_dataset_name +'/train_1'
                 train_filename = '../data/' + set_dataset_name + '/' + set_split_name + '/'
                 output_filename = set_algo_name + '_' + set_dataset_name + '_' + set_split_name + '_' \
                                   + set_nepoch_name + '_' + set_epsilon_str + '_' + set_learning_rate + '_' \
-                                  + '_' + set_b + '_' + set_K + '_' + set_s
+                                  + '_' + set_b + '_' + set_K
 
                 # Load graph
                 trainGraph = graph_util.loadGraphFromEdgeListTxt(oriGraph_filename, directed=False)
@@ -558,13 +573,12 @@ if __name__ == '__main__':
                 # set_C = 'C' + str(args.clip_value)
                 set_b = 'b' + str(args.upper_bound)
                 set_K = 'K' + str(args.K)
-                set_s = 's' + str(args.s)
 
                 train_filename = '../data/' + set_dataset_name + '/train_1'
                 test_filename = '../data/' + set_dataset_name + '/test_1'
                 output_filename = set_algo_name + '_' + set_dataset_name + '_' \
                                   + set_nepoch_name + '_' + set_epsilon_str + '_' + set_learning_rate + '_' \
-                                  + '_' + set_b + '_' + set_K + '_' + set_s
+                                  + '_' + set_b + '_' + set_K
 
                 # Load graph
                 G = loadGraphFromEdgeListTxt(train_filename, directed=False)
