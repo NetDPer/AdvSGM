@@ -1,5 +1,5 @@
 # AdvSGM
-Private Skip-gram with Adversarial Training
+Private Skip-gram via Adversarial Training
 
 ## Requirements
 - python 3.6.5
