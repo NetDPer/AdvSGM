@@ -344,13 +344,9 @@ class trainModel:
                         # --------- RDP mechanism -------------
                         number_of_edges = len(self.graph.edges())
                         number_of_nodes = len(self.graph.nodes())
-                        sampling_prob = args.d_batch_size / number_of_edges
-                        neg_sampling_prob = args.d_batch_size * args.K / number_of_nodes
+                        sampling_prob = args.d_batch_size ** 2 * args.K / number_of_edges / number_of_nodes
                         steps = (d_epoch + 1) * (epoch + 1)
-                        new_sigma = args.dis_sigma * args.d_batch_size * (args.K + 1)
-                        rdp = compute_rdp(q=sampling_prob, noise_multiplier=new_sigma, steps=steps, orders=orders)
-                        rdp = rdp + compute_rdp(q=neg_sampling_prob, noise_multiplier=new_sigma, steps=steps,
-                                                orders=orders)
+                        rdp = compute_rdp(q=sampling_prob, noise_multiplier=args.dis_sigma, steps=steps, orders=orders)
                         _eps, _delta, _ = get_privacy_spent(orders, rdp, target_eps=args.epsilon)
 
                         if _delta > args.delta:
