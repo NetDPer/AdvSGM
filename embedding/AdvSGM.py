@@ -91,8 +91,14 @@ class discriminator:
                                                     args.low_bound, args.upper_bound))
             # sigmoid_j = tf.sigmoid(self.adv_inner_product_2)
 
-            self.weight_i = 1 / sigmoid_i
-            self.weight_j = 1 / sigmoid_j
+            self.weight_i = 1  # 0.5
+            self.weight_j = 1  # 0.5
+
+            # self.weight_i = tf.stop_gradient(1 / self.sigmoid_i)
+            # self.weight_j = tf.stop_gradient(1 / self.sigmoid_j)
+
+            # self.weight_i = 1 / self.sigmoid_i
+            # self.weight_j = 1 / self.sigmoid_j
 
             self.adv_loss = self.weight_i * tf.log(1 - sigmoid_i) + self.weight_j * tf.log(1 - sigmoid_j)
 
