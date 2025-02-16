@@ -2,13 +2,14 @@ import tensorflow as tf
 import numpy as np
 import argparse
 import networkx as nx
-from utils1 import graph_util
+import graph_util
 import math
-from sklearn import metrics
 from sklearn.externals import joblib
-from privacy.analysis.rdp_accountant import compute_rdp
-from privacy.analysis.rdp_accountant import get_privacy_spent
-import random
+from rdp_accountant import compute_rdp
+from rdp_accountant import get_privacy_spent
+from generator import generator
+from discriminator import discriminator
+from CalcAUC import CalcAUC
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--indep_run_times', default=5)
@@ -35,132 +36,6 @@ parser.add_argument('--epsilon', default=6)
 parser.add_argument('--s', default=7, help='normalization weight parameter where s=k+2')
 
 args = parser.parse_args()
-
-class discriminator:
-    def __init__(self, args, edge_distribution):
-        with tf.variable_scope('forward_pass'):
-            self.edge_distribution = edge_distribution
-            self.u_i = tf.placeholder(name='u_i', dtype=tf.int32, shape=[None])
-            self.u_j = tf.placeholder(name='u_j', dtype=tf.int32, shape=[None])
-            self.label = tf.placeholder(name='label', dtype=tf.float32, shape=[None])
-            self.optimal_val_ij = tf.placeholder(name='optimal_values', dtype=tf.float32,
-                                                 shape=[None])
-            self.fake_u_i_embedding = tf.placeholder(name='fake_u_i_emb', dtype=tf.float32,
-                                                  shape=[None, args.embedding_dim])
-            self.fake_u_j_embedding = tf.placeholder(name='fake_u_j_emb', dtype=tf.float32,
-                                                  shape=[None, args.embedding_dim])
-            self.Gaussian_noise_i = tf.placeholder(name='Gau_noise_i', dtype=tf.float32,
-                                                  shape=[None, args.embedding_dim])
-            self.Gaussian_noise_j = tf.placeholder(name='Gau_noise_j', dtype=tf.float32,
-                                                  shape=[None, args.embedding_dim])
-
-            self.embedding = tf.get_variable('target_emb', [args.num_of_nodes, args.embedding_dim],
-                                             initializer=tf.random_uniform_initializer(minval=-1., maxval=1.))
-            self.u_i_embedding = tf.matmul(tf.one_hot(self.u_i, depth=args.num_of_nodes), self.embedding)
-
-            args.s = args.K + 2
-            self.embedding = self.embedding / [tf.norm(self.embedding) * args.s]
-
-            if args.proximity == 'first-order':
-                self.u_j_embedding = tf.matmul(tf.one_hot(self.u_j, depth=args.num_of_nodes), self.embedding)
-            elif args.proximity == 'second-order':
-                self.context_embedding = tf.get_variable('context_emb', [args.num_of_nodes, args.embedding_dim],
-                                                         initializer=tf.random_uniform_initializer(minval=-1., maxval=1.))
-                self.u_j_embedding = tf.matmul(tf.one_hot(self.u_j, depth=args.num_of_nodes), self.context_embedding)
-
-                self.context_embedding = self.context_embedding / [tf.norm(self.context_embedding) * args.s]
-
-            self.inner_product = tf.reduce_sum(self.u_i_embedding * self.u_j_embedding, axis=1)
-
-            sigmoid_test = tf.div(1.0, 1 + expclip(-self.label * self.inner_product,
-                                                    args.low_bound, args.upper_bound))
-
-            self.sgm_loss = -tf.log(sigmoid_test)
-            # self.sgm_loss = -tf.reduce_mean(tf.log_sigmoid(self.label * self.inner_product))
-
-            # ----------- adv term ------------
-            self.adv_inner_product_1 = tf.reduce_sum(self.u_i_embedding * self.fake_u_i_embedding
-                                                     + self.u_i_embedding * self.Gaussian_noise_i, axis=1)
-            sigmoid_i = tf.div(1.0, 1 + expclip(-self.adv_inner_product_1,
-                                                    args.low_bound, args.upper_bound))
-            # sigmoid_i = tf.sigmoid(self.adv_inner_product_1)
-
-            self.adv_inner_product_2 = tf.reduce_sum(self.u_j_embedding * self.fake_u_j_embedding
-                                                     + self.u_j_embedding * self.Gaussian_noise_j, axis=1)
-            sigmoid_j = tf.div(1.0, 1 + expclip(-self.adv_inner_product_2,
-                                                    args.low_bound, args.upper_bound))
-            # sigmoid_j = tf.sigmoid(self.adv_inner_product_2)
-
-            self.weight_i = 1  # 0.5
-            self.weight_j = 1  # 0.5
-
-            # self.weight_i = tf.stop_gradient(1 / self.sigmoid_i)
-            # self.weight_j = tf.stop_gradient(1 / self.sigmoid_j)
-
-            # self.weight_i = 1 / self.sigmoid_i
-            # self.weight_j = 1 / self.sigmoid_j
-
-            self.adv_loss = self.weight_i * tf.log(1 - sigmoid_i) + self.weight_j * tf.log(1 - sigmoid_j)
-
-            self.loss = tf.reduce_mean(self.sgm_loss + self.adv_loss)
-            self.optimizer = tf.train.AdamOptimizer(learning_rate=args.lr_dis)
-            self.train_op = self.optimizer.minimize(self.loss)
-
-class generator:
-    def __init__(self, args):
-        self.gen_W_1 = tf.get_variable(name='gen_W_i', dtype=tf.float32,
-                                       shape=[args.num_of_nodes, args.embedding_dim],
-                                       initializer=tf.contrib.layers.xavier_initializer(uniform=False),
-                                       trainable=True)
-        self.gen_B_1 = tf.get_variable(name='gen_B_i', dtype=tf.float32,
-                                       shape=[args.embedding_dim],
-                                       initializer=tf.contrib.layers.xavier_initializer(uniform=False),
-                                       trainable=True)
-        self.gen_W_2 = tf.get_variable(name='gen_W_j', dtype=tf.float32,
-                                       shape=[args.num_of_nodes, args.embedding_dim],
-                                       initializer=tf.contrib.layers.xavier_initializer(uniform=False),
-                                       trainable=True)
-        self.gen_B_2 = tf.get_variable(name='gen_B_j', dtype=tf.float32,
-                                       shape=[args.embedding_dim],
-                                       initializer=tf.contrib.layers.xavier_initializer(uniform=False),
-                                       trainable=True)
-
-        self.gen_W_1 = self.gen_W_1 / [tf.norm(self.gen_W_1)]
-        self.gen_W_2 = self.gen_W_2 / [tf.norm(self.gen_W_2)]
-
-        self.node_ids = tf.placeholder(tf.int32, shape=[None])
-
-        self.noise_embedding = tf.placeholder(tf.float32, shape=[None, args.embedding_dim])  # noise matrix
-
-        self.pos_node_i_embedding = tf.placeholder(tf.float32, shape=[None, args.embedding_dim])  # pos samples from dis
-
-        self.pos_node_j_embedding = tf.placeholder(tf.float32, shape=[None, args.embedding_dim])  # pos samples from dis
-
-        self.gen_w_1 = tf.matmul(tf.one_hot(self.node_ids, depth=args.num_of_nodes), self.gen_W_1)
-
-        self.gen_w_2 = tf.matmul(tf.one_hot(self.node_ids, depth=args.num_of_nodes), self.gen_W_2)
-
-        test_1 = self.noise_embedding * self.gen_w_1 + self.gen_B_1
-
-        # self.fake_embedding_1 = tf.nn.leaky_relu(test_1)
-
-        self.fake_embedding_1 = tf.nn.sigmoid(test_1)
-
-        test_2 = self.noise_embedding * self.gen_w_2 + self.gen_B_2
-
-        # self.fake_embedding_2 = tf.nn.leaky_relu(test_2)
-
-        self.fake_embedding_2 = tf.nn.sigmoid(test_2)
-
-        self.gen_term_1 = self.fake_embedding_1 * self.pos_node_i_embedding \
-                          + self.pos_node_i_embedding * self.noise_embedding
-        self.gen_term_2 = self.fake_embedding_2 * self.pos_node_j_embedding \
-                          + self.pos_node_j_embedding * self.noise_embedding
-        self.loss = tf.reduce_mean(tf.log(1 - tf.log_sigmoid(self.gen_term_1)) + tf.log(1 - tf.log_sigmoid(self.gen_term_2)))
-
-        self.optimizer = tf.train.AdamOptimizer(args.lr_gen)
-
-        self.g_updates = self.optimizer.minimize(self.loss)
 
 class AliasSampling:
     def __init__(self, prob):
@@ -277,29 +152,6 @@ class prepare_data:
 
         return node_ids, GaussianNoise_embedding, node_i_embedding, node_j_embedding
 
-def expclip(x, a=None, b=None):
-    '''
-    clipping exp function to limit Sigmoid.
-    Exponential soft clipping, with parameterized corner sharpness.
-    '''
-    # default scaling constants to match tanh corner shape
-    _c_tanh = 2 / (np.e * np.e + 1)  # == 1 - np.tanh(1) ~= 0.24
-    _c_softclip = np.log(2) / _c_tanh
-    _c_expclip = 1 / (2 * _c_tanh)
-
-    c = _c_expclip
-    if a is not None and b is not None:
-        c /= (b - a) / 2
-
-    v = tf.clip_by_value(x, a, b)
-
-    if a is not None:
-        v = v + tf.exp(-c * np.abs(x - a)) / (2 * c)
-    if b is not None:
-        v = v - tf.exp(-c * np.abs(x - b)) / (2 * c)
-
-    return v
-
 class trainModel:
     def __init__(self, inf_display, graph, test_pos=None, test_neg=None, node_label=None):
         self.inf_display = inf_display
@@ -414,39 +266,6 @@ class trainModel:
 
         return gen_loss, neg_loss, gen_cnt
 
-def get_batchSample_from_subGraSet(subgra_set, batch_size):
-    ui_uj_label_dict = subgra_set
-    ui_uj_label_dict.keys()
-
-    # print(ui_uj_label_dict.keys())
-
-    sampled_keys = random.sample(ui_uj_label_dict.keys(), batch_size)
-
-    # print(sampled_keys)
-
-    u_i = []
-    u_j = []
-    label = []
-    prox_val = []
-    for key in sampled_keys:
-        ui_uj_label_list = ui_uj_label_dict[key]
-        for index in ui_uj_label_list:
-            # print(index)
-            u_i.append(index[0])
-            u_j.append(index[1])
-            label.append(index[2])
-
-    return u_i, u_j, label[0]
-
-def CalcAUC(sim, test_pos, test_neg):
-    pos_scores = np.asarray(sim[test_pos[0], test_pos[1]]).squeeze()
-    neg_scores = np.asarray(sim[test_neg[0], test_neg[1]]).squeeze()
-    scores = np.concatenate([pos_scores, neg_scores])
-    labels = np.hstack([np.ones(len(pos_scores)), np.zeros(len(neg_scores))])
-    fpr, tpr, _ = metrics.roc_curve(labels, scores, pos_label=1)
-    auc = metrics.auc(fpr, tpr)
-    return auc
-
 def compute_delta(steps, batch_size, dataset_size, target_eps):
     orders = [1 + x / 10.0 for x in range(1, 100)] + list(range(12, 64))
     sampling_probability = batch_size / dataset_size
@@ -455,28 +274,11 @@ def compute_delta(steps, batch_size, dataset_size, target_eps):
     # compute epsilon given the list of RDP values and the target delta
     return get_privacy_spent(orders, rdp, target_eps=target_eps)
 
-def loadGraphFromEdgeListTxt(file_name, directed=True):
-    with open(file_name, 'r') as f:
-        # n_nodes = f.readline()
-        # f.readline() # Discard the number of edges
-        if directed:
-            G = nx.DiGraph()
-        else:
-            G = nx.Graph()
-        for line in f:
-            edge = line.strip().split()
-            if len(edge) == 3:
-                w = float(edge[2])
-            else:
-                w = 1.0
-            G.add_edge(int(edge[0]), int(edge[1]), weight=w)
-    return G
-
 if __name__ == '__main__':
     test_task = 'lp'
     set_algo_name = 'AdvSGM'
 
-    set_dataset_names = ['lp_PPI']
+    set_dataset_names = ['lp_facebook']
     set_split_name = 'train0.9_test0.1'
     for set_dataset_name in set_dataset_names:
         tf.reset_default_graph()
@@ -484,8 +286,8 @@ if __name__ == '__main__':
         set_learning_rate = 'step' + str(args.lr_dis)
         set_nepoch_name = 'nepoch' + str(args.n_epoch)
         # ------------------------------------------------------
-        oriGraph_filename = '../data/' + set_dataset_name +'/train_1'
-        train_filename = '../data/' + set_dataset_name + '/' + set_split_name + '/'
+        oriGraph_filename = '../ProcessedData/' + set_dataset_name +'/train_1'
+        train_filename = '../ProcessedData/' + set_dataset_name + '/' + set_split_name + '/'
 
         # Load graph
         trainGraph = graph_util.loadGraphFromEdgeListTxt(oriGraph_filename, directed=False)
