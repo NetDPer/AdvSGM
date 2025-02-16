@@ -286,8 +286,8 @@ if __name__ == '__main__':
         set_learning_rate = 'step' + str(args.lr_dis)
         set_nepoch_name = 'nepoch' + str(args.n_epoch)
         # ------------------------------------------------------
-        oriGraph_filename = '../ProcessedData/' + set_dataset_name +'/train_1'
-        train_filename = '../ProcessedData/' + set_dataset_name + '/' + set_split_name + '/'
+        oriGraph_filename = '../data/' + set_dataset_name +'/train_1'
+        train_filename = '../data/' + set_dataset_name + '/' + set_split_name + '/'
 
         # Load graph
         trainGraph = graph_util.loadGraphFromEdgeListTxt(oriGraph_filename, directed=False)
